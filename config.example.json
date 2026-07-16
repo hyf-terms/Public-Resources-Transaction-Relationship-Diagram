@@ -1,0 +1,20 @@
+{
+  "scope": "zygg",
+  "categories": ["公开招标", "中标", "成交", "合同", "更正", "终止"],
+  "pages_per_category": 1,
+  "start_date": "2026-01-01",
+  "end_date": "2026-12-31",
+  "metric_period_start": "2026-01-01",
+  "keywords": [],
+  "request_delay_seconds": 1.5,
+  "timeout_seconds": 30,
+  "retries": 2,
+  "companies": [
+    {
+      "name": "示例上市公司股份有限公司",
+      "aliases": ["示例公司", "示例科技"],
+      "last_year_revenue_yuan": 1000000000
+    }
+  ]
+}
+

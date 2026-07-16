@@ -1,0 +1,16 @@
+config.json
+data/
+*.sqlite
+*.db
+*.csv
+*.xlsx
+*.xls
+*.jsonl
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
