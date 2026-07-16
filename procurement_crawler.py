@@ -23,6 +23,7 @@ from typing import Iterable
 
 from p0_database import ProcurementDatabase
 from p1_matching import P1Processor, write_gold_template
+from p2_lifecycle import P2LifecycleProcessor
 
 
 BASE = "https://www.ccgp.gov.cn"
@@ -359,9 +360,13 @@ def save_sqlite(path: Path, notices: list[Notice], cfg: dict, output_dir: Path, 
         else:
             raise FileNotFoundError(f"金标文件不存在：{label_path}")
     p1.export_csv(output_dir)
+    p2 = P2LifecycleProcessor(path)
+    p2_changes = p2.ingest(notices)
+    p2.export_csv(output_dir)
     return {
         "p0": p0_changes,
         "p1": p1_changes,
+        "p2": p2_changes,
         "gold_labels_imported": imported_labels,
         "matching_evaluation": p1.evaluate(),
     }
@@ -588,7 +593,7 @@ def main():
         "error_count": sum(bool(x.error) for x in notices),
         "source": BASE,
         "database_changes": database_changes,
-        "database_model": "P1_AUDITABLE_CHAIN_MATCHING",
+        "database_model": "P2_LIFECYCLE_RECONCILIATION",
         "config": cfg,
     }
     (out / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
