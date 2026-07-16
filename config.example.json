@@ -13,8 +13,8 @@
     {
       "name": "示例上市公司股份有限公司",
       "aliases": ["示例公司", "示例科技"],
+      "listed_code": "600000",
       "last_year_revenue_yuan": 1000000000
     }
   ]
 }
-

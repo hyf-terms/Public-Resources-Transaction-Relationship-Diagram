@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Iterable
 
 from p0_database import ProcurementDatabase
+from p1_matching import P1Processor, write_gold_template
 
 
 BASE = "https://www.ccgp.gov.cn"
@@ -341,13 +342,29 @@ def write_csv(path: Path, rows: Iterable[dict], fields: list[str]):
         w.writerows(rows)
 
 
-def save_sqlite(path: Path, notices: list[Notice]) -> dict[str, int]:
-    """Append evidence and derived objects to the P0 event database.
+def save_sqlite(path: Path, notices: list[Notice], cfg: dict, output_dir: Path, gold_labels: str = "") -> dict[str, dict]:
+    """Append P0 evidence, then build the auditable P1 reconciliation layer.
 
     Re-ingesting identical content is idempotent.  A changed content hash creates
     a new immutable document version and a superseding logical event version.
     """
-    return ProcurementDatabase(path).ingest(notices)
+    p0_changes = ProcurementDatabase(path).ingest(notices)
+    p1 = P1Processor(path, cfg.get("companies", []))
+    p1_changes = p1.ingest(notices)
+    imported_labels = 0
+    if gold_labels:
+        label_path = Path(gold_labels)
+        if label_path.exists():
+            imported_labels = p1.import_gold_labels(label_path)
+        else:
+            raise FileNotFoundError(f"金标文件不存在：{label_path}")
+    p1.export_csv(output_dir)
+    return {
+        "p0": p0_changes,
+        "p1": p1_changes,
+        "gold_labels_imported": imported_labels,
+        "matching_evaluation": p1.evaluate(),
+    }
 
 
 def project_rows(notices: list[Notice]) -> list[dict]:
@@ -510,15 +527,28 @@ def metrics_rows(notices: list[Notice], projects: list[dict], suppliers: list[di
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--config", default="config.json")
+    ap.add_argument("--config", default="", help="默认依次查找当前目录和脚本目录下的 config.json")
     ap.add_argument("--output-dir", default="data")
     ap.add_argument("--max-details", type=int, default=0, help="0=不限；测试时可限制详情数")
     ap.add_argument("--rebuild-from-csv", action="store_true", help="使用输出目录现有 notices.csv 原文重算字段，不访问网络")
+    ap.add_argument("--gold-labels", default="", help="可选：导入P1人工标注CSV并计算匹配指标")
+    ap.add_argument("--write-gold-template", action="store_true", help="在输出目录生成P1人工标注模板")
     args = ap.parse_args()
-    cfg_path = Path(args.config)
+    if args.config:
+        cfg_path = Path(args.config)
+    else:
+        candidates = [Path.cwd() / "config.json", Path(__file__).resolve().with_name("config.json")]
+        cfg_path = next((path for path in candidates if path.exists()), candidates[0])
+    if not cfg_path.exists():
+        raise FileNotFoundError(
+            f"配置文件不存在：{cfg_path}。请将 config.example.json 复制为 config.json，"
+            "或使用 --config 指定路径。"
+        )
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
+    if args.write_gold_template:
+        write_gold_template(out / "gold_labels_template.csv")
     if args.rebuild_from_csv:
         source_csv = out / "notices.csv"
         rows = list(csv.DictReader(source_csv.open(encoding="utf-8-sig")))
@@ -550,7 +580,7 @@ def main():
     write_csv(out / "metrics.csv", metrics, ["scope", "metric", "value", "unit", "definition"])
     supplier_fields = list(suppliers[0]) if suppliers else ["supplier"]
     write_csv(out / "supplier_summary.csv", suppliers, supplier_fields)
-    database_changes = save_sqlite(out / "procurement.sqlite", notices)
+    database_changes = save_sqlite(out / "procurement.sqlite", notices, cfg, out, args.gold_labels)
     summary = {
         "crawl_time": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "notice_count": len(notices),
@@ -558,7 +588,7 @@ def main():
         "error_count": sum(bool(x.error) for x in notices),
         "source": BASE,
         "database_changes": database_changes,
-        "database_model": "P0_APPEND_ONLY_EVENT_STORE",
+        "database_model": "P1_AUDITABLE_CHAIN_MATCHING",
         "config": cfg,
     }
     (out / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")

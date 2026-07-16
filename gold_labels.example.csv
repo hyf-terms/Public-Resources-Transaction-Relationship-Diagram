@@ -1,0 +1,2 @@
+link_type,source_url,target_url,is_match,package_same,annotator,note
+TENDER_TO_AWARD,https://example.com/tender,https://example.com/award,1,1,示例标注员,项目编号和标包号一致

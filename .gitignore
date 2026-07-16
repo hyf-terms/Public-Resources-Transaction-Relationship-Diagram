@@ -3,6 +3,7 @@ data/
 *.sqlite
 *.db
 *.csv
+!gold_labels.example.csv
 *.xlsx
 *.xls
 *.jsonl
