@@ -10,7 +10,6 @@ import hashlib
 import html
 import json
 import re
-import sqlite3
 import sys
 import time
 import urllib.error
@@ -21,6 +20,8 @@ from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Iterable
+
+from p0_database import ProcurementDatabase
 
 
 BASE = "https://www.ccgp.gov.cn"
@@ -340,20 +341,13 @@ def write_csv(path: Path, rows: Iterable[dict], fields: list[str]):
         w.writerows(rows)
 
 
-def save_sqlite(path: Path, notices: list[Notice]):
-    con = sqlite3.connect(path)
-    con.execute("DROP TABLE IF EXISTS notices")
-    cols = ",".join(f'"{x}" TEXT' for x in NOTICE_FIELDS)
-    con.execute(f"CREATE TABLE notices ({cols}, UNIQUE(url))")
-    placeholders = ",".join("?" for _ in NOTICE_FIELDS)
-    con.executemany(
-        f"INSERT OR REPLACE INTO notices VALUES ({placeholders})",
-        [[getattr(n, x) for x in NOTICE_FIELDS] for n in notices],
-    )
-    con.execute("CREATE INDEX idx_notices_project ON notices(project_key)")
-    con.execute("CREATE INDEX idx_notices_supplier ON notices(supplier_names)")
-    con.commit()
-    con.close()
+def save_sqlite(path: Path, notices: list[Notice]) -> dict[str, int]:
+    """Append evidence and derived objects to the P0 event database.
+
+    Re-ingesting identical content is idempotent.  A changed content hash creates
+    a new immutable document version and a superseding logical event version.
+    """
+    return ProcurementDatabase(path).ingest(notices)
 
 
 def project_rows(notices: list[Notice]) -> list[dict]:
@@ -556,13 +550,15 @@ def main():
     write_csv(out / "metrics.csv", metrics, ["scope", "metric", "value", "unit", "definition"])
     supplier_fields = list(suppliers[0]) if suppliers else ["supplier"]
     write_csv(out / "supplier_summary.csv", suppliers, supplier_fields)
-    save_sqlite(out / "procurement.sqlite", notices)
+    database_changes = save_sqlite(out / "procurement.sqlite", notices)
     summary = {
         "crawl_time": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "notice_count": len(notices),
         "project_count": len(projects),
         "error_count": sum(bool(x.error) for x in notices),
         "source": BASE,
+        "database_changes": database_changes,
+        "database_model": "P0_APPEND_ONLY_EVENT_STORE",
         "config": cfg,
     }
     (out / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -571,4 +567,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
