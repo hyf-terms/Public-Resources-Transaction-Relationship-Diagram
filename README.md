@@ -55,19 +55,23 @@ python procurement_crawler.py --config config.json --output-dir data --rebuild-f
 
 ## 输出文件
 
-- `notices.csv`：一行一条公告，是事件证据，不等同于订单；
-- `projects.csv`：公告关联后的项目级初步视图；
-- `supplier_summary.csv`：供应商金额、客户集中度和地区覆盖；
-- `metrics.csv`：项目及供应商指标长表；
-- `procurement.sqlite`：P0 追加式事件数据库；
-- `organizations.csv`：P1 企业实体和上市公司别名归一结果；
-- `chain_links.csv`：招标—中标—合同的最优链路及匹配证据；
-- `match_review_queue.csv`：无候选、低分或歧义链路的复核队列；
-- `lifecycle_links.csv`：更正、延期、废标、终止和重新采购关联；
-- `lifecycle_review_queue.csv`：P2生命周期待复核队列；
-- `object_lifecycle_state.csv`：采购轮次和标包的当前状态；
-- `data_quality_metrics.csv`：文档版本、链路和复核数量等质量指标；
-- `run_summary.json`：运行参数与质量摘要。
+文件默认写入 `data/`。CSV 是本次运行后的当前快照，SQLite 是持续增量、保留历史版本的主库。
+
+| 文件 | 主要指标（中文 / English） |
+|---|---|
+| `notices.csv` | 发布时间 / Publish Time、采购人 / Buyer、项目编号 / Project Code、供应商 / Supplier、预算 / Budget、中标或合同金额 / Award or Contract Amount |
+| `projects.csv` | 项目状态 / Project Status、公告数 / Notice Count、招标到中标天数 / Tender-to-Award Days、中标到合同天数 / Award-to-Contract Days、预算折价率 / Budget Discount Rate |
+| `supplier_summary.csv` | 中标金额 / Award Amount、中标次数 / Award Count、新采购人数 / New Buyer Count、首次合作采购人占比 / First-Cooperation Buyer Ratio、客户集中度 / Buyer Concentration、客户HHI / Buyer HHI、覆盖省份数 / Province Count |
+| `metrics.csv` | 公告数 / Notice Count、项目数 / Project Count、招标到中标转化率 / Tender-to-Award Conversion Rate、平均预算折价率 / Average Budget Discount Rate、取消终止率 / Cancellation Rate、废标流标率 / Failed-Bid Rate、延期率 / Delay Rate |
+| `organizations.csv` | 标准名称 / Canonical Name、机构类型 / Organization Type、证券代码 / Listed Code |
+| `chain_links.csv` | 链路类型 / Link Type、匹配方法 / Match Method、匹配分数 / Match Score、置信度 / Confidence、复核状态 / Review Status |
+| `match_review_queue.csv` | 复核原因 / Review Reason、任务状态 / Review Status、人工决定 / Decision |
+| `lifecycle_links.csv` | 生命周期关系 / Lifecycle Relation、受影响对象 / Affected Object、匹配分数 / Match Score、置信度 / Confidence |
+| `lifecycle_review_queue.csv` | 生命周期复核原因 / Lifecycle Review Reason、任务状态 / Review Status、人工决定 / Decision |
+| `object_lifecycle_state.csv` | 当前状态 / Current State、状态事件 / State Event、状态时间 / State Time |
+| `data_quality_metrics.csv` | 文档数 / Document Count、版本数 / Version Count、链路数 / Link Count、待复核数 / Pending Review Count |
+| `run_summary.json` | 抓取时间 / Crawl Time、公告数 / Notice Count、错误数 / Error Count、数据库新增量 / Database Changes、匹配评估 / Matching Evaluation |
+| `procurement.sqlite` | P0—P2全部明细、历史版本、事件、金额、实体、链路与复核数据 / Full P0–P2 Data |
 
 ## 配置说明
 
