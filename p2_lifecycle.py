@@ -443,6 +443,10 @@ class P2LifecycleProcessor:
             add("p1_pending_reviews", con.execute("SELECT COUNT(*) FROM match_review_queue WHERE status='PENDING'").fetchone()[0], "P1待人工复核数")
             add("p2_current_lifecycle_links", con.execute("SELECT COUNT(*) FROM current_lifecycle_link").fetchone()[0], "P2当前更正、终止和重采关联数")
             add("p2_pending_reviews", con.execute("SELECT COUNT(*) FROM lifecycle_review_queue WHERE status='PENDING'").fetchone()[0], "P2待人工复核数")
+            if con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='procurement_intent_item'").fetchone():
+                add("p3_intent_items", con.execute("SELECT COUNT(*) FROM procurement_intent_item").fetchone()[0], "P3采购意向项目数")
+                add("p3_current_intent_tender_links", con.execute("SELECT COUNT(*) FROM current_intent_tender_link").fetchone()[0], "P3当前意向—招标链路数")
+                add("p3_pending_reviews", con.execute("SELECT COUNT(*) FROM intent_match_review_queue WHERE status='PENDING'").fetchone()[0], "P3待人工复核数")
             for row in con.execute("SELECT document_type, COUNT(*) AS n FROM source_document GROUP BY document_type ORDER BY document_type"):
                 add(f"documents_stage_{row['document_type']}", row["n"], "按标准公告阶段统计的逻辑文档数")
         return metrics

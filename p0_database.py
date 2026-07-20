@@ -107,6 +107,8 @@ def canonical_title(value: str) -> str:
 
 def event_spec(notice) -> tuple[str, str, str | None]:
     stage = getattr(notice, "stage", "")
+    if stage == "采购意向":
+        return "INTENT_PUBLISHED", "project", "PLANNED"
     if stage == "招标公告":
         return "TENDER_OPENED", "package", "OPEN"
     if stage == "中标结果":
@@ -414,9 +416,69 @@ class ProcurementDatabase:
                 """INSERT INTO root_project(
                        project_uid, canonical_title, buyer_name, region_code,
                        category_code, first_intent_time, planned_budget, created_at
-                   ) VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)""",
-                (project_uid, canonical, buyer, str(getattr(notice, "province", "") or ""), getattr(notice, "budget_yuan", None), crawl_time),
+                   ) VALUES (?, ?, ?, ?, NULL, ?, ?, ?)""",
+                (
+                    project_uid, canonical, buyer, str(getattr(notice, "province", "") or ""),
+                    publish_time if getattr(notice, "stage", "") == "采购意向" else None,
+                    getattr(notice, "budget_yuan", None), crawl_time,
+                ),
             )
+        elif getattr(notice, "stage", "") == "采购意向":
+            con.execute(
+                """UPDATE root_project
+                   SET first_intent_time = COALESCE(first_intent_time, ?),
+                       planned_budget = COALESCE(planned_budget, ?)
+                   WHERE project_uid = ?""",
+                (publish_time or None, getattr(notice, "budget_yuan", None), project_uid),
+            )
+
+        # An intention is demand-side evidence at project level.  It must not
+        # create a procurement attempt/package or imply a future supplier.
+        if getattr(notice, "stage", "") == "采购意向":
+            link_method, link_score, confidence, review_status = "intent_item_exact", 1.0, "HIGH", "AUTO_ACCEPTED"
+            con.execute(
+                """INSERT OR IGNORE INTO document_object_link(
+                       link_uid, source_doc_uid, source_version_uid,
+                       object_type, object_uid, link_method, match_score,
+                       confidence, review_status, created_at
+                   ) VALUES (?, ?, ?, 'project', ?, ?, ?, ?, ?, ?)""",
+                (uid("lnk", version_uid, "project", project_uid), doc_uid, version_uid, project_uid, link_method, link_score, confidence, review_status, crawl_time),
+            )
+            event_type = "INTENT_PUBLISHED"
+            logical_event_key = uid("evtkey", doc_uid, event_type)
+            event_uid = uid("evt", logical_event_key, version_uid)
+            if not con.execute("SELECT 1 FROM procurement_event WHERE event_uid = ?", (event_uid,)).fetchone():
+                created["events"] = 1
+                con.execute(
+                    """INSERT INTO procurement_event(
+                           event_uid, logical_event_key, event_type, target_type,
+                           target_uid, event_time, publish_time, available_time,
+                           state_after, reason_code, old_value_json, new_value_json,
+                           source_doc_uid, source_version_uid, link_method, link_score,
+                           link_confidence, review_status, created_at
+                       ) VALUES (?, ?, ?, 'project', ?, ?, ?, ?, 'PLANNED', NULL, NULL, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        event_uid, logical_event_key, event_type, project_uid,
+                        publish_time, publish_time, available_time(publish_time, crawl_time),
+                        json.dumps({"demand_side_only": True}, ensure_ascii=False),
+                        doc_uid, version_uid, link_method, link_score, confidence,
+                        review_status, crawl_time,
+                    ),
+                )
+            budget = getattr(notice, "budget_yuan", None)
+            if budget is not None:
+                amount_uid = uid("amt", event_uid, "INTENT_BUDGET", project_uid)
+                if not con.execute("SELECT 1 FROM amount_observation WHERE amount_uid = ?", (amount_uid,)).fetchone():
+                    created["amounts"] = 1
+                    con.execute(
+                        """INSERT INTO amount_observation(
+                               amount_uid, event_uid, target_type, target_uid,
+                               amount_type, amount, currency, allocation_status,
+                               created_at
+                           ) VALUES (?, ?, 'project', ?, 'INTENT_BUDGET', ?, 'CNY', 'DEMAND_SIDE_ONLY', ?)""",
+                        (amount_uid, event_uid, project_uid, float(budget), crawl_time),
+                    )
+            return created
 
         project_no = str(getattr(notice, "project_code", "") or "")
         round_no = detect_round(title)
@@ -480,7 +542,7 @@ class ProcurementDatabase:
             )
 
         event_type, target_type, state_after = event_spec(notice)
-        target_uid = package_uid if target_type == "package" else attempt_uid
+        target_uid = project_uid if target_type == "project" else package_uid if target_type == "package" else attempt_uid
         if target_type == "contract":
             contract_uid = uid("con", package_uid, project_no, doc_uid)
             target_uid = contract_uid
@@ -522,7 +584,8 @@ class ProcurementDatabase:
         budget = getattr(notice, "budget_yuan", None)
         amount = getattr(notice, "amount_yuan", None)
         if budget is not None:
-            observations.append(("TENDER_BUDGET", float(budget), "DIRECT"))
+            budget_type = "INTENT_BUDGET" if event_type == "INTENT_PUBLISHED" else "TENDER_BUDGET"
+            observations.append((budget_type, float(budget), "DIRECT"))
         if amount is not None and event_type == "AWARD_PUBLISHED":
             allocation = "UNALLOCATED_MULTI_SUPPLIER" if "|" in str(getattr(notice, "supplier_names", "")) else "DIRECT"
             observations.append(("AWARD_AMOUNT", float(amount), allocation))

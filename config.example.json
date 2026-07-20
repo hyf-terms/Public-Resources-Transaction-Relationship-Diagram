@@ -1,6 +1,6 @@
 {
   "scope": "zygg",
-  "categories": ["公开招标", "中标", "成交", "合同", "更正", "终止"],
+  "categories": ["采购意向", "公开招标", "中标", "成交", "合同", "更正", "终止"],
   "pages_per_category": 1,
   "start_date": "2026-01-01",
   "end_date": "2026-12-31",
@@ -9,6 +9,8 @@
   "request_delay_seconds": 1.5,
   "timeout_seconds": 30,
   "retries": 2,
+  "intent_urls": [],
+  "intent_seed_csv": "",
   "companies": [
     {
       "name": "示例上市公司股份有限公司",

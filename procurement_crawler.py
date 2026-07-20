@@ -24,6 +24,7 @@ from typing import Iterable
 from p0_database import ProcurementDatabase
 from p1_matching import P1Processor, write_gold_template
 from p2_lifecycle import P2LifecycleProcessor
+from p3_intentions import P3IntentProcessor, write_intent_gold_template
 
 
 BASE = "https://www.ccgp.gov.cn"
@@ -129,6 +130,34 @@ class DetailParser(HTMLParser):
         return "\n".join(x for x in lines if x)
 
 
+class TableParser(HTMLParser):
+    """Minimal table reader used for public procurement-intention pages."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.in_cell = False
+        self.cell_parts: list[str] = []
+        self.row: list[str] = []
+        self.rows: list[list[str]] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"td", "th"}:
+            self.in_cell = True
+            self.cell_parts = []
+
+    def handle_endtag(self, tag):
+        if tag in {"td", "th"} and self.in_cell:
+            self.row.append(clean("".join(self.cell_parts)))
+            self.in_cell = False
+        elif tag == "tr" and self.row:
+            self.rows.append(self.row)
+            self.row = []
+
+    def handle_data(self, data):
+        if self.in_cell:
+            self.cell_parts.append(data)
+
+
 @dataclass
 class Notice:
     notice_id: str
@@ -158,6 +187,12 @@ class Notice:
     content_hash: str = ""
     crawl_time: str = ""
     error: str = ""
+    source_page_url: str = ""
+    intent_item_no: str = ""
+    procurement_category: str = ""
+    demand_summary: str = ""
+    expected_purchase_date: str = ""
+    intent_remarks: str = ""
 
 
 class Crawler:
@@ -202,6 +237,8 @@ class Crawler:
         seen = set()
         notices = []
         for category in enabled:
+            if category == "采购意向":
+                continue
             if category not in CATEGORIES:
                 print(f"跳过未知类别：{category}", file=sys.stderr)
                 continue
@@ -249,9 +286,40 @@ class Crawler:
                             url=href,
                         )
                     )
+        if "采购意向" in enabled or self.cfg.get("intent_urls") or self.cfg.get("intent_seed_csv"):
+            notices.extend(self.collect_intentions())
+        return notices
+
+    def collect_intentions(self) -> list[Notice]:
+        """Collect public intention details without automating the CAPTCHA search page."""
+
+        notices: list[Notice] = []
+        urls = [str(url).strip() for url in self.cfg.get("intent_urls", []) if str(url).strip()]
+        seed_name = str(self.cfg.get("intent_seed_csv", "") or "").strip()
+        if seed_name:
+            seed_path = Path(seed_name)
+            if not seed_path.is_absolute():
+                seed_path = Path(self.cfg.get("_config_dir", Path.cwd())) / seed_path
+            if seed_path.exists():
+                with seed_path.open(encoding="utf-8-sig", newline="") as fh:
+                    for row_no, row in enumerate(csv.DictReader(fh), 1):
+                        if row.get("project_name") and row.get("buyer"):
+                            notices.append(intent_notice_from_row(row, row_no))
+                        elif row.get("url"):
+                            urls.append(row["url"].strip())
+            else:
+                print(f"采购意向种子文件不存在：{seed_path}", file=sys.stderr)
+        for url in dict.fromkeys(urls):
+            try:
+                body = self.fetch(url)
+                notices.extend(parse_intention_page(body, url))
+            except Exception as exc:
+                print(f"采购意向详情失败 {url}: {exc}", file=sys.stderr)
         return notices
 
     def enrich(self, notice: Notice) -> Notice:
+        if notice.stage == "采购意向" and notice.raw_text:
+            return notice
         try:
             body = self.fetch(notice.url)
             p = DetailParser()
@@ -294,6 +362,106 @@ def money_yuan(text: str, labels: Iterable[str]) -> float | None:
             except ValueError:
                 pass
     return None
+
+
+def parse_budget_value(value: str, unit_hint: str = "") -> float | None:
+    match = re.search(r"[\d,，.]+", value or "")
+    if not match:
+        return None
+    try:
+        amount = float(match.group(0).replace(",", "").replace("，", ""))
+    except ValueError:
+        return None
+    return amount * 10000 if "万元" in f"{unit_hint}{value}" else amount
+
+
+def normalize_cn_datetime(value: str) -> str:
+    match = re.search(r"(\d{4})年(\d{1,2})月(\d{1,2})日(?:\s*(\d{1,2}):(\d{1,2}))?", value or "")
+    if not match:
+        return clean(value)
+    year, month, day, hour, minute = match.groups()
+    return f"{int(year):04d}-{int(month):02d}-{int(day):02d} {int(hour or 0):02d}:{int(minute or 0):02d}"
+
+
+def intent_notice_from_row(row: dict, row_no: int = 1, page_text: str = "") -> Notice:
+    item_no = clean(row.get("item_no") or row.get("序号") or str(row_no))
+    page_url = clean(row.get("source_page_url") or row.get("url"))
+    project_name = clean(row.get("project_name") or row.get("采购项目名称"))
+    buyer = clean(row.get("buyer") or row.get("采购单位"))
+    category = clean(row.get("procurement_category") or row.get("采购品目"))
+    demand = clean(row.get("demand_summary") or row.get("采购需求概况"))
+    expected = clean(row.get("expected_purchase_date") or row.get("预计采购日期"))
+    remarks = clean(row.get("intent_remarks") or row.get("备注"))
+    publish_time = normalize_cn_datetime(clean(row.get("publish_time") or row.get("发布日期")))
+    budget = parse_budget_value(
+        clean(row.get("budget_yuan") or row.get("budget_wan") or row.get("预算金额") or ""),
+        "万元" if row.get("budget_wan") else clean(row.get("budget_unit") or row.get("预算单位") or ""),
+    )
+    if row.get("budget_yuan"):
+        budget = parse_budget_value(clean(row.get("budget_yuan")), "元")
+    stable_source = page_url or f"intent-seed:{buyer}:{project_name}:{expected}"
+    virtual_url = f"{stable_source}#intent-item-{item_no or row_no}"
+    payload = {
+        "buyer": buyer, "project_name": project_name, "procurement_category": category,
+        "demand_summary": demand, "budget_yuan": budget,
+        "expected_purchase_date": expected, "remarks": remarks,
+    }
+    raw_text = page_text or json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    crawl_time = dt.datetime.now().astimezone().isoformat(timespec="seconds")
+    notice = Notice(
+        notice_id=hashlib.sha1(virtual_url.encode()).hexdigest()[:16],
+        source="中国政府采购网-采购意向", category="采购意向", stage="采购意向",
+        title=project_name, publish_time=publish_time, province=clean(row.get("province") or row.get("地区")),
+        buyer=buyer, url=virtual_url, project_name=project_name, budget_yuan=budget,
+        raw_text=raw_text, content_hash=hashlib.sha256(raw_text.encode()).hexdigest(), crawl_time=crawl_time,
+        source_page_url=page_url, intent_item_no=item_no,
+        procurement_category=category, demand_summary=demand,
+        expected_purchase_date=expected, intent_remarks=remarks,
+    )
+    extract_fields(notice)
+    notice.project_name = project_name
+    notice.budget_yuan = budget
+    notice.project_key = hashlib.sha1(f"{normalize_title(project_name)}|{clean(buyer)}".encode()).hexdigest()[:16]
+    return notice
+
+
+def parse_intention_page(body: str, url: str) -> list[Notice]:
+    detail = DetailParser()
+    detail.feed(body)
+    page_text = detail.text()
+    if not page_text:
+        page_text = clean(re.sub(r"<[^>]+>", " ", html.unescape(body)))
+    table = TableParser()
+    table.feed(body)
+    publish_match = re.search(r"\d{4}年\d{1,2}月\d{1,2}日(?:\s*\d{1,2}:\d{1,2})?", page_text)
+    publish_time = normalize_cn_datetime(publish_match.group(0)) if publish_match else ""
+    results: list[Notice] = []
+    for header_index, header in enumerate(table.rows):
+        normalized = [re.sub(r"\s+", "", value) for value in header]
+        if not any("采购项目名称" in value for value in normalized) or not any("预算金额" in value for value in normalized):
+            continue
+        for row_no, values in enumerate(table.rows[header_index + 1 :], 1):
+            if len(values) < len(header):
+                continue
+            mapped = {normalized[index]: values[index] for index in range(len(header))}
+            project_name = next((v for k, v in mapped.items() if "采购项目名称" in k), "")
+            buyer = next((v for k, v in mapped.items() if "采购单位" in k), "")
+            if not project_name or not buyer:
+                continue
+            budget_header = next((k for k in mapped if "预算金额" in k), "")
+            item = {
+                "item_no": next((v for k, v in mapped.items() if "序号" in k), str(row_no)),
+                "url": url, "source_page_url": url, "publish_time": publish_time,
+                "buyer": buyer, "project_name": project_name,
+                "procurement_category": next((v for k, v in mapped.items() if "采购品目" in k), ""),
+                "demand_summary": next((v for k, v in mapped.items() if "采购需求概况" in k), ""),
+                "预算金额": mapped.get(budget_header, ""), "预算单位": "万元" if "万元" in budget_header else "元",
+                "expected_purchase_date": next((v for k, v in mapped.items() if "预计采购日期" in k), ""),
+                "intent_remarks": next((v for k, v in mapped.items() if "备注" in k), ""),
+            }
+            results.append(intent_notice_from_row(item, row_no, json.dumps(item, ensure_ascii=False, sort_keys=True)))
+        break
+    return results
 
 
 def sentence_with(text: str, words: list[str]) -> str:
@@ -343,7 +511,10 @@ def write_csv(path: Path, rows: Iterable[dict], fields: list[str]):
         w.writerows(rows)
 
 
-def save_sqlite(path: Path, notices: list[Notice], cfg: dict, output_dir: Path, gold_labels: str = "") -> dict[str, dict]:
+def save_sqlite(
+    path: Path, notices: list[Notice], cfg: dict, output_dir: Path,
+    gold_labels: str = "", intent_gold_labels: str = "",
+) -> dict[str, dict]:
     """Append P0 evidence, then build the auditable P1 reconciliation layer.
 
     Re-ingesting identical content is idempotent.  A changed content hash creates
@@ -362,13 +533,26 @@ def save_sqlite(path: Path, notices: list[Notice], cfg: dict, output_dir: Path, 
     p1.export_csv(output_dir)
     p2 = P2LifecycleProcessor(path)
     p2_changes = p2.ingest(notices)
+    p3 = P3IntentProcessor(path)
+    p3_changes = p3.ingest(notices)
+    imported_intent_labels = 0
+    if intent_gold_labels:
+        intent_label_path = Path(intent_gold_labels)
+        if intent_label_path.exists():
+            imported_intent_labels = p3.import_gold_labels(intent_label_path)
+        else:
+            raise FileNotFoundError(f"采购意向金标文件不存在：{intent_label_path}")
+    p3.export_csv(output_dir)
     p2.export_csv(output_dir)
     return {
         "p0": p0_changes,
         "p1": p1_changes,
         "p2": p2_changes,
+        "p3": p3_changes,
         "gold_labels_imported": imported_labels,
         "matching_evaluation": p1.evaluate(),
+        "intent_gold_labels_imported": imported_intent_labels,
+        "intent_matching_evaluation": p3.evaluate(),
     }
 
 
@@ -380,13 +564,17 @@ def project_rows(notices: list[Notice]) -> list[dict]:
     for key, xs in groups.items():
         xs.sort(key=lambda x: x.publish_time)
         stages = {x.stage for x in xs}
-        budgets = [x.budget_yuan for x in xs if x.budget_yuan is not None]
+        intent_budgets = [x.budget_yuan for x in xs if x.budget_yuan is not None and x.stage == "采购意向"]
+        tender_budgets = [x.budget_yuan for x in xs if x.budget_yuan is not None and x.stage == "招标公告"]
         amounts = [x.amount_yuan for x in xs if x.amount_yuan is not None and x.stage in {"中标结果", "采购合同"}]
-        budget = max(budgets) if budgets else None
+        intent_budget = max(intent_budgets) if intent_budgets else None
+        budget = max(tender_budgets) if tender_budgets else None
         amount = max(amounts) if amounts else None
+        intent_times = [parse_time(x.publish_time) for x in xs if x.stage == "采购意向" and parse_time(x.publish_time)]
         tender_times = [parse_time(x.publish_time) for x in xs if x.stage == "招标公告" and parse_time(x.publish_time)]
         award_times = [parse_time(x.publish_time) for x in xs if x.stage == "中标结果" and parse_time(x.publish_time)]
         contract_times = [parse_time(x.publish_time) for x in xs if x.stage == "采购合同" and parse_time(x.publish_time)]
+        first_intent = min(intent_times) if intent_times else None
         first_tender = min(tender_times) if tender_times else None
         first_award = min(award_times) if award_times else None
         first_contract = min(contract_times) if contract_times else None
@@ -405,6 +593,8 @@ def project_rows(notices: list[Notice]) -> list[dict]:
             status = "延期"
         elif "更正" in stages:
             status = "已更正"
+        elif "采购意向" in stages:
+            status = "采购计划中"
         else:
             status = "招标中"
         out.append({
@@ -418,6 +608,7 @@ def project_rows(notices: list[Notice]) -> list[dict]:
             "notice_count": len(xs),
             "stages": " → ".join(x.stage for x in xs),
             "status": status,
+            "has_intent": int("采购意向" in stages),
             "has_tender": int("招标公告" in stages),
             "has_award": int("中标结果" in stages),
             "has_contract": int("采购合同" in stages),
@@ -426,8 +617,10 @@ def project_rows(notices: list[Notice]) -> list[dict]:
             "has_cancelled": has_cancelled,
             "has_failed_bid": has_failed,
             "has_delay": has_delay,
+            "days_intent_to_tender": (first_tender.date() - first_intent.date()).days if first_intent and first_tender else None,
             "days_tender_to_award": (first_award.date() - first_tender.date()).days if first_tender and first_award else None,
             "days_award_to_contract": (first_contract.date() - first_award.date()).days if first_award and first_contract else None,
+            "intent_budget_yuan": intent_budget,
             "budget_yuan": budget,
             "award_or_contract_yuan": amount,
             "discount_rate": (1 - amount / budget) if budget and amount is not None else None,
@@ -502,6 +695,8 @@ def supplier_rows(notices: list[Notice], cfg: dict) -> list[dict]:
 
 def metrics_rows(notices: list[Notice], projects: list[dict], suppliers: list[dict], cfg: dict) -> list[dict]:
     metrics = []
+    intents = sum(p["has_intent"] for p in projects)
+    intent_converted = sum(p["has_intent"] and p["has_tender"] for p in projects)
     tenders = sum(p["has_tender"] for p in projects)
     converted = sum(p["has_tender"] and p["has_award"] for p in projects)
     cancelled = sum(p["has_cancelled"] for p in projects)
@@ -511,6 +706,8 @@ def metrics_rows(notices: list[Notice], projects: list[dict], suppliers: list[di
     metrics.extend([
         {"scope": "全样本", "metric": "公告数", "value": len(notices), "unit": "条", "definition": "去重后的公告URL数"},
         {"scope": "全样本", "metric": "项目数", "value": len(projects), "unit": "个", "definition": "项目编号优先、标题+采购人辅助关联"},
+        {"scope": "全样本", "metric": "采购意向数", "value": intents, "unit": "个", "definition": "采购意向项目数；仅表示需求侧计划"},
+        {"scope": "全样本", "metric": "意向到招标转化率", "value": intent_converted / intents if intents else None, "unit": "%", "definition": "同时含采购意向和招标公告的项目数/采购意向项目数；需覆盖完整观察窗"},
         {"scope": "全样本", "metric": "招标到中标转化率", "value": converted / tenders if tenders else None, "unit": "%", "definition": "同时含招标公告和中标结果的项目数/含招标公告项目数；需覆盖完整观察窗"},
         {"scope": "全样本", "metric": "平均预算折价率", "value": sum(discounts) / len(discounts) if discounts else None, "unit": "%", "definition": "同时披露预算和成交金额项目的简单平均"},
         {"scope": "全样本", "metric": "取消/终止比例", "value": cancelled / len(projects) if projects else None, "unit": "%", "definition": "取消或终止项目数/项目数，不含废标流标"},
@@ -538,6 +735,8 @@ def main():
     ap.add_argument("--rebuild-from-csv", action="store_true", help="使用输出目录现有 notices.csv 原文重算字段，不访问网络")
     ap.add_argument("--gold-labels", default="", help="可选：导入P1人工标注CSV并计算匹配指标")
     ap.add_argument("--write-gold-template", action="store_true", help="在输出目录生成P1人工标注模板")
+    ap.add_argument("--intent-gold-labels", default="", help="可选：导入P3意向—招标人工标注CSV")
+    ap.add_argument("--write-intent-gold-template", action="store_true", help="在输出目录生成P3人工标注模板")
     args = ap.parse_args()
     if args.config:
         cfg_path = Path(args.config)
@@ -550,10 +749,13 @@ def main():
             "或使用 --config 指定路径。"
         )
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["_config_dir"] = str(cfg_path.resolve().parent)
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
     if args.write_gold_template:
         write_gold_template(out / "gold_labels_template.csv")
+    if args.write_intent_gold_template:
+        write_intent_gold_template(out / "intent_gold_labels_template.csv")
     if args.rebuild_from_csv:
         source_csv = out / "notices.csv"
         rows = list(csv.DictReader(source_csv.open(encoding="utf-8-sig")))
@@ -585,7 +787,10 @@ def main():
     write_csv(out / "metrics.csv", metrics, ["scope", "metric", "value", "unit", "definition"])
     supplier_fields = list(suppliers[0]) if suppliers else ["supplier"]
     write_csv(out / "supplier_summary.csv", suppliers, supplier_fields)
-    database_changes = save_sqlite(out / "procurement.sqlite", notices, cfg, out, args.gold_labels)
+    database_changes = save_sqlite(
+        out / "procurement.sqlite", notices, cfg, out,
+        args.gold_labels, args.intent_gold_labels,
+    )
     summary = {
         "crawl_time": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "notice_count": len(notices),
@@ -593,8 +798,8 @@ def main():
         "error_count": sum(bool(x.error) for x in notices),
         "source": BASE,
         "database_changes": database_changes,
-        "database_model": "P2_LIFECYCLE_RECONCILIATION",
-        "config": cfg,
+        "database_model": "P3_PROCUREMENT_INTENTIONS",
+        "config": {key: value for key, value in cfg.items() if not key.startswith("_")},
     }
     (out / "run_summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False, indent=2))

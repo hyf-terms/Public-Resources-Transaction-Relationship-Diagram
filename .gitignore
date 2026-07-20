@@ -4,6 +4,7 @@ data/
 *.db
 *.csv
 !gold_labels.example.csv
+!intent_seed.example.csv
 *.xlsx
 *.xls
 *.jsonl
