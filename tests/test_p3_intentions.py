@@ -1,3 +1,4 @@
+import datetime as dt
 import sqlite3
 import tempfile
 import unittest
@@ -9,7 +10,7 @@ from p0_database import ProcurementDatabase
 from p1_matching import P1Processor
 from p2_lifecycle import P2LifecycleProcessor
 from p3_intentions import P3IntentProcessor
-from procurement_crawler import Crawler, daily_page_is_complete, parse_intention_page
+from procurement_crawler import Crawler, calendar_date, daily_page_is_complete, parse_intention_page
 
 
 @dataclass
@@ -85,6 +86,11 @@ class P3IntentionsTest(unittest.TestCase):
             daily_page_is_complete(["2026-07-20", "2026-07-19"], "2026-07-20")
         )
         self.assertTrue(daily_page_is_complete(["2026-07-19"] * 20, "2026-07-20"))
+
+    def test_previous_day_mode_uses_yesterday_by_default(self):
+        today = dt.date.fromisoformat(calendar_date("Asia/Shanghai"))
+        previous_day = dt.date.fromisoformat(calendar_date("Asia/Shanghai", -1))
+        self.assertEqual(dt.timedelta(days=1), today - previous_day)
 
     def test_daily_collection_paginates_until_older_notice(self):
         pages = {

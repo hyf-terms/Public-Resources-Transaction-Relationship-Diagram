@@ -49,13 +49,14 @@ def clean(s: str | None) -> str:
     return re.sub(r"\s+", " ", html.unescape(s or "")).strip()
 
 
-def calendar_today(timezone_name: str) -> str:
-    """Return today's date in the configured supported timezone."""
+def calendar_date(timezone_name: str, day_offset: int = 0) -> str:
+    """Return a calendar date in the configured supported timezone."""
 
     if timezone_name != "Asia/Shanghai":
         raise ValueError("当前仅支持 timezone=Asia/Shanghai")
     china_time = dt.timezone(dt.timedelta(hours=8), name="Asia/Shanghai")
-    return dt.datetime.now(china_time).date().isoformat()
+    target = dt.datetime.now(china_time).date() + dt.timedelta(days=day_offset)
+    return target.isoformat()
 
 
 def daily_page_is_complete(page_dates: list[str], target_date: str) -> bool:
@@ -246,13 +247,16 @@ class Crawler:
     def collect(self) -> list[Notice]:
         scope = self.cfg.get("scope", "zygg")
         pages = int(self.cfg.get("pages_per_category", 1))
-        crawl_mode = str(self.cfg.get("crawl_mode", "daily")).strip().lower()
-        if crawl_mode not in {"daily", "pages"}:
-            raise ValueError("crawl_mode 只能是 daily 或 pages")
+        crawl_mode = str(self.cfg.get("crawl_mode", "previous_day")).strip().lower()
+        if crawl_mode not in {"previous_day", "daily", "pages"}:
+            raise ValueError("crawl_mode 只能是 previous_day、daily 或 pages")
         timezone_name = str(self.cfg.get("timezone", "Asia/Shanghai"))
-        target_date = str(self.cfg.get("daily_date", "") or calendar_today(timezone_name))
+        configured_date = str(self.cfg.get("target_date", "") or self.cfg.get("daily_date", ""))
+        day_offset = -1 if crawl_mode == "previous_day" else 0
+        target_date = configured_date or calendar_date(timezone_name, day_offset)
         max_daily_pages = max(1, int(self.cfg.get("max_pages_per_category", 50)))
-        page_limit = max_daily_pages if crawl_mode == "daily" else max(0, pages)
+        date_mode = crawl_mode in {"previous_day", "daily"}
+        page_limit = max_daily_pages if date_mode else max(0, pages)
         enabled = self.cfg.get("categories", list(CATEGORIES))
         start = self.cfg.get("start_date", "")
         end = self.cfg.get("end_date", "")
@@ -295,7 +299,7 @@ class Crawler:
                         continue
                     if category == "终止" and not any(x in title for x in ("终止", "废标", "流标", "失败")):
                         continue
-                    if crawl_mode == "daily" and date != target_date:
+                    if date_mode and date != target_date:
                         continue
                     if crawl_mode == "pages" and (start and date < start or end and date > end):
                         continue
@@ -316,7 +320,7 @@ class Crawler:
                             url=href,
                         )
                     )
-                if crawl_mode == "daily" and daily_page_is_complete(page_dates, target_date):
+                if date_mode and daily_page_is_complete(page_dates, target_date):
                     break
         if "采购意向" in enabled or self.cfg.get("intent_urls") or self.cfg.get("intent_seed_csv"):
             notices.extend(self.collect_intentions())

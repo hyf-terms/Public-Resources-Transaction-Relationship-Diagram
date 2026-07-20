@@ -2,7 +2,7 @@
   "scope": "zygg",
   "categories": ["采购意向", "公开招标", "中标", "成交", "合同", "更正", "终止"],
   "pages_per_category": 1,
-  "crawl_mode": "daily",
+  "crawl_mode": "previous_day",
   "max_pages_per_category": 50,
   "timezone": "Asia/Shanghai",
   "start_date": "2026-01-01",

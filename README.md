@@ -82,7 +82,7 @@ python procurement_crawler.py --config config.json --output-dir data --rebuild-f
 
 - `scope`：`zygg` 为中央公告，`dfgg` 为地方公告；
 - `categories`：需要采集的公告类别；
-- `crawl_mode`：`daily` 按北京时间抓取当日公告并动态翻页；`pages` 按固定页数抓取；
+- `crawl_mode`：默认 `previous_day`，按北京时间抓取前一天全部公告并动态翻页；`daily` 抓取当天；`pages` 按固定页数抓取；
 - `max_pages_per_category`：每日模式下每类最大翻页数，防止异常页面导致无限翻页；
 - `intent_urls`：无需验证码即可访问的采购意向详情页；
 - `intent_seed_csv`：结构化采购意向种子文件路径；
