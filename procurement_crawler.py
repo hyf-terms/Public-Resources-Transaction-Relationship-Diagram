@@ -49,6 +49,22 @@ def clean(s: str | None) -> str:
     return re.sub(r"\s+", " ", html.unescape(s or "")).strip()
 
 
+def calendar_today(timezone_name: str) -> str:
+    """Return today's date in the configured supported timezone."""
+
+    if timezone_name != "Asia/Shanghai":
+        raise ValueError("当前仅支持 timezone=Asia/Shanghai")
+    china_time = dt.timezone(dt.timedelta(hours=8), name="Asia/Shanghai")
+    return dt.datetime.now(china_time).date().isoformat()
+
+
+def daily_page_is_complete(page_dates: list[str], target_date: str) -> bool:
+    """Stop after a descending list page has crossed into an earlier date."""
+
+    valid_dates = [value for value in page_dates if re.fullmatch(r"\d{4}-\d{2}-\d{2}", value)]
+    return bool(valid_dates) and max(valid_dates) <= target_date and min(valid_dates) < target_date
+
+
 class ListParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -230,6 +246,13 @@ class Crawler:
     def collect(self) -> list[Notice]:
         scope = self.cfg.get("scope", "zygg")
         pages = int(self.cfg.get("pages_per_category", 1))
+        crawl_mode = str(self.cfg.get("crawl_mode", "daily")).strip().lower()
+        if crawl_mode not in {"daily", "pages"}:
+            raise ValueError("crawl_mode 只能是 daily 或 pages")
+        timezone_name = str(self.cfg.get("timezone", "Asia/Shanghai"))
+        target_date = str(self.cfg.get("daily_date", "") or calendar_today(timezone_name))
+        max_daily_pages = max(1, int(self.cfg.get("max_pages_per_category", 50)))
+        page_limit = max_daily_pages if crawl_mode == "daily" else max(0, pages)
         enabled = self.cfg.get("categories", list(CATEGORIES))
         start = self.cfg.get("start_date", "")
         end = self.cfg.get("end_date", "")
@@ -243,7 +266,7 @@ class Crawler:
                 print(f"跳过未知类别：{category}", file=sys.stderr)
                 continue
             code, stage = CATEGORIES[category]
-            for page in range(pages):
+            for page in range(page_limit):
                 url = self.list_url(code, page, scope)
                 try:
                     body = self.fetch(url)
@@ -252,22 +275,29 @@ class Crawler:
                     continue
                 parser = ListParser()
                 parser.feed(body)
+                if not parser.items:
+                    break
+                page_dates = []
                 for row in parser.items:
                     href = urllib.parse.urljoin(url, row["href"])
-                    if not href or href in seen:
-                        continue
                     title = clean(row["title"])
-                    if category == "合同" and "合同" not in title:
-                        continue
-                    if category == "终止" and not any(x in title for x in ("终止", "废标", "流标", "失败")):
-                        continue
                     text = clean(" ".join(row["text"]))
                     ems = row["ems"]
                     publish_time = ems[0] if ems else first(text, r"发布时间：\s*([^地]+)")
                     province = ems[1] if len(ems) > 1 else first(text, r"地域：\s*([^采]+)")
                     buyer = ems[2] if len(ems) > 2 else first(text, r"采购人：\s*(.+)$")
                     date = publish_time[:10]
-                    if start and date < start or end and date > end:
+                    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
+                        page_dates.append(date)
+                    if not href or href in seen:
+                        continue
+                    if category == "合同" and "合同" not in title:
+                        continue
+                    if category == "终止" and not any(x in title for x in ("终止", "废标", "流标", "失败")):
+                        continue
+                    if crawl_mode == "daily" and date != target_date:
+                        continue
+                    if crawl_mode == "pages" and (start and date < start or end and date > end):
                         continue
                     haystack = f"{title} {buyer}".casefold()
                     if terms and not any(t in haystack for t in terms):
@@ -286,6 +316,8 @@ class Crawler:
                             url=href,
                         )
                     )
+                if crawl_mode == "daily" and daily_page_is_complete(page_dates, target_date):
+                    break
         if "采购意向" in enabled or self.cfg.get("intent_urls") or self.cfg.get("intent_seed_csv"):
             notices.extend(self.collect_intentions())
         return notices

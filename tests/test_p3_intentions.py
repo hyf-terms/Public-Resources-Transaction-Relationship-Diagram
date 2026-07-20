@@ -9,7 +9,7 @@ from p0_database import ProcurementDatabase
 from p1_matching import P1Processor
 from p2_lifecycle import P2LifecycleProcessor
 from p3_intentions import P3IntentProcessor
-from procurement_crawler import parse_intention_page
+from procurement_crawler import Crawler, daily_page_is_complete, parse_intention_page
 
 
 @dataclass
@@ -78,6 +78,48 @@ class P3IntentionsTest(unittest.TestCase):
         P1Processor(self.db_path).ingest(notices)
         P2LifecycleProcessor(self.db_path).ingest(notices)
         return P3IntentProcessor(self.db_path).ingest(notices)
+
+    def test_daily_page_stop_rule_crosses_into_previous_day(self):
+        self.assertFalse(daily_page_is_complete(["2026-07-20"] * 20, "2026-07-20"))
+        self.assertTrue(
+            daily_page_is_complete(["2026-07-20", "2026-07-19"], "2026-07-20")
+        )
+        self.assertTrue(daily_page_is_complete(["2026-07-19"] * 20, "2026-07-20"))
+
+    def test_daily_collection_paginates_until_older_notice(self):
+        pages = {
+            "index.htm": self._list_html([("a1", "2026-07-20"), ("a2", "2026-07-20")]),
+            "index_1.htm": self._list_html([("a3", "2026-07-20"), ("old", "2026-07-19")]),
+            "index_2.htm": self._list_html([("should-not-fetch", "2026-07-19")]),
+        }
+        crawler = Crawler(
+            {
+                "categories": ["公开招标"],
+                "crawl_mode": "daily",
+                "daily_date": "2026-07-20",
+                "max_pages_per_category": 50,
+            }
+        )
+        fetched = []
+
+        def fake_fetch(url):
+            name = url.rsplit("/", 1)[-1]
+            fetched.append(name)
+            return pages[name]
+
+        crawler.fetch = fake_fetch
+        notices = crawler.collect()
+        self.assertEqual(["index.htm", "index_1.htm"], fetched)
+        self.assertEqual({"a1", "a2", "a3"}, {notice.title for notice in notices})
+
+    @staticmethod
+    def _list_html(rows):
+        items = "".join(
+            f'<li><a href="/{title}" title="{title}">{title}</a>'
+            f'<em>{date} 10:00:00</em><em>北京</em><em>采购单位甲</em></li>'
+            for title, date in rows
+        )
+        return f'<ul class="c_list_bid">{items}</ul>'
 
     def connect(self):
         con = sqlite3.connect(self.db_path)
